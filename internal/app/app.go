@@ -8,72 +8,83 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/xgmsx/go-url-shortener-ddd/internal/config"
-	kafkaReader "github.com/xgmsx/go-url-shortener-ddd/pkg/kafka/reader"
-	kafkaWriter "github.com/xgmsx/go-url-shortener-ddd/pkg/kafka/writer"
-	"github.com/xgmsx/go-url-shortener-ddd/pkg/postgres"
-	"github.com/xgmsx/go-url-shortener-ddd/pkg/redis"
+	"github.com/xgmsx/go-tiny-url/internal/config"
+	adapterKafka "github.com/xgmsx/go-tiny-url/internal/domain/adapter/kafka"
+	adapterPostgres "github.com/xgmsx/go-tiny-url/internal/domain/adapter/postgres"
+	adapterRedis "github.com/xgmsx/go-tiny-url/internal/domain/adapter/redis"
+	controllerGRPC "github.com/xgmsx/go-tiny-url/internal/domain/controller/grpc"
+	controllerHTTP "github.com/xgmsx/go-tiny-url/internal/domain/controller/http"
+	controllerKafka "github.com/xgmsx/go-tiny-url/internal/domain/controller/kafka"
+	usecaseCreate "github.com/xgmsx/go-tiny-url/internal/domain/usecase/create"
+	usecaseFetch "github.com/xgmsx/go-tiny-url/internal/domain/usecase/fetch"
+	"github.com/xgmsx/go-tiny-url/pkg/grpc"
+	"github.com/xgmsx/go-tiny-url/pkg/http"
+	kafkaReader "github.com/xgmsx/go-tiny-url/pkg/kafka/reader"
+	kafkaWriter "github.com/xgmsx/go-tiny-url/pkg/kafka/writer"
+	postgresClient "github.com/xgmsx/go-tiny-url/pkg/postgres"
+	redisClient "github.com/xgmsx/go-tiny-url/pkg/redis"
 )
 
-const chanSize = 8
+type App struct{}
 
-type Dependencies struct {
-	Redis       *redis.Client
-	Postgres    *postgres.Pool
-	KafkaWriter *kafkaWriter.Writer
-	KafkaReader *kafkaReader.Reader
+func New() App {
+	return App{}
 }
 
-func Run(ctx context.Context, c *config.Config) error {
-	var (
-		deps Dependencies
-		err  error
-	)
-
+func (a App) Run(ctx context.Context, c *config.Config) error {
 	// init dependencies
-	deps.Postgres, err = postgres.New(ctx, &c.Postgres)
+	postgres, err := postgresClient.New(ctx, &c.Postgres)
 	if err != nil {
 		return fmt.Errorf("postgres.New: %w", err)
 	}
-	defer deps.Postgres.Close()
+	defer postgres.Close()
 
-	deps.Redis, err = redis.New(&c.Redis)
+	redis, err := redisClient.New(&c.Redis)
 	if err != nil {
 		return fmt.Errorf("redis.New: %w", err)
 	}
-	defer deps.Redis.Close()
+	defer redis.Close()
 
-	deps.KafkaWriter, err = kafkaWriter.New(&c.KafkaWriter)
+	KafkaWriter, err := kafkaWriter.New(&c.KafkaWriter)
 	if err != nil {
 		return fmt.Errorf("kafkaWriter.New: %w", err)
 	}
-	defer deps.KafkaWriter.Close()
+	defer KafkaWriter.Close()
 
-	deps.KafkaReader, err = kafkaReader.New(&c.KafkaReader)
+	KafkaReader, err := kafkaReader.New(&c.KafkaReader)
 	if err != nil {
 		return fmt.Errorf("kafkaReader.New: %w", err)
 	}
-	defer deps.KafkaReader.Close()
+	defer KafkaReader.Close()
 
-	// init domain
-	ch := make(chan error, chanSize)
-	defer close(ch)
+	// init adapter
+	database := adapterPostgres.New(postgres.Pool)
+	cache := adapterRedis.New(redis.Client)
+	publisher := adapterKafka.New(KafkaWriter.Writer)
 
-	uc := getUCLink(deps)
+	// init usecase
+	ucCreateLink := usecaseCreate.New(database, cache, publisher)
+	ucFetchLink := usecaseFetch.New(database, cache)
 
-	http := getHTTPController(ch, c, uc)
-	defer http.Close()
+	// init controller
+	errCh := make(chan error)
+	defer close(errCh)
 
-	grpc := getGRPCController(ch, c, uc)
-	defer grpc.Close()
+	httpServer := http.New(c.HTTP, nil, controllerHTTP.New("/api/shortener", ucCreateLink, ucFetchLink))
+	go func() { errCh <- httpServer.Serve(c.HTTP.Port) }()
+	defer httpServer.Close()
 
-	kafka := getKafkaController(ch, deps.KafkaReader, uc)
-	defer kafka.Close()
+	grpcServer := grpc.New(controllerGRPC.New(ucCreateLink, ucFetchLink))
+	go func() { errCh <- grpcServer.Serve(ctx, c.GRPC.Port) }()
+	defer grpcServer.Close()
 
-	return waiting(ch)
+	kafkaConsumer := controllerKafka.New(KafkaReader, ucCreateLink)
+	go func() { errCh <- kafkaConsumer.Consume(ctx) }()
+
+	return a.waiting(errCh)
 }
 
-func waiting(ch chan error) error {
+func (a App) waiting(errCh <-chan error) error {
 	log.Info().Msg("App started")
 	defer log.Info().Msg("App stopping...")
 
@@ -84,8 +95,8 @@ func waiting(ch chan error) error {
 	case <-ctxTerm.Done():
 		log.Info().Msg("App got termination signal")
 		return nil
-	case err := <-ch:
-		log.Info().Err(err).Msg("App got notify")
+	case err := <-errCh:
+		log.Info().Err(err).Msg("App got error notify")
 		return err
 	}
 }

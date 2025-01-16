@@ -1,48 +1,137 @@
+// cmd/app/main_test.go
 package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"testing"
 
-	"github.com/xgmsx/go-url-shortener-ddd/internal/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	mocks "github.com/xgmsx/go-tiny-url/cmd/app/mocks"
+	"github.com/xgmsx/go-tiny-url/internal/config"
 )
 
 func TestRun(t *testing.T) {
-	envs := map[string]string{
-		"APP_NAME":           "test",
-		"APP_VERSION":        "0.0.0",
-		"POSTGRES_USER":      "testuser",
-		"POSTGRES_PASSWORD":  "testpass",
-		"POSTGRES_HOST":      "testhost",
-		"POSTGRES_DB":        "testdb",
-		"REDIS_ADDR":         "testredis",
-		"KAFKA_BROKERS":      "testkafka",
-		"KAFKA_OUTPUT_TOPIC": "topic1",
-		"KAFKA_INPUT_TOPIC":  "topic2",
-		"KAFKA_GROUP":        "test",
-	}
-	for key, value := range envs {
-		t.Setenv(key, value)
-	}
-
 	tests := []struct {
-		name string
-		fn   func(context.Context, *config.Config) error
+		name       string
+		mockConfig func(loader *mocks.MockconfigLoader)
+		mockApp    func(runner *mocks.MockappRunner)
+		wantErr    string
 	}{
 		{
-			name: "happy path",
-			fn:   func(_ context.Context, _ *config.Config) error { return nil },
+			name: "Happy path",
+			mockConfig: func(cl *mocks.MockconfigLoader) {
+				cl.EXPECT().Load(gomock.Any()).Return(config.New(), nil).Times(1)
+			},
+			mockApp: func(ar *mocks.MockappRunner) {
+				ar.EXPECT().Run(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+			},
 		},
 		{
-			name: "error path",
-			fn:   func(_ context.Context, _ *config.Config) error { return fmt.Errorf("test error") },
+			name: "Config error",
+			mockConfig: func(cl *mocks.MockconfigLoader) {
+				cl.EXPECT().Load(gomock.Any()).Return(nil, errors.New("test config error")).Times(1)
+			},
+			mockApp: func(ar *mocks.MockappRunner) {
+				ar.EXPECT().Run(gomock.Any(), gomock.Any()).Return(nil).Times(0)
+			},
+			wantErr: "test config error",
+		},
+		{
+			name: "App error",
+			mockConfig: func(cl *mocks.MockconfigLoader) {
+				cl.EXPECT().Load(gomock.Any()).Return(config.New(), nil).Times(1)
+			},
+			mockApp: func(ar *mocks.MockappRunner) {
+				ar.EXPECT().Run(gomock.Any(), gomock.Any()).Return(errors.New("test app error")).Times(1)
+			},
+			wantErr: "test app error",
 		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(_ *testing.T) {
-			run(tt.fn)
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockConfigLoader := mocks.NewMockconfigLoader(ctrl)
+			mockAppRunner := mocks.NewMockappRunner(ctrl)
+
+			tt.mockConfig(mockConfigLoader)
+			tt.mockApp(mockAppRunner)
+
+			// arrange
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			// act
+			err := run(ctx, mockConfigLoader, mockAppRunner)
+
+			// assert
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.ErrorContains(t, err, tt.wantErr)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestMainFunc(t *testing.T) {
+	tests := []struct {
+		name       string
+		wantPanic  bool
+		mockConfig func(loader *mocks.MockconfigLoader)
+		mockApp    func(runner *mocks.MockappRunner)
+	}{
+		{
+			name:      "Happy path",
+			wantPanic: false,
+			mockConfig: func(cl *mocks.MockconfigLoader) {
+				cl.EXPECT().Load(gomock.Any()).Return(config.New(), nil).Times(1)
+			},
+			mockApp: func(ar *mocks.MockappRunner) {
+				ar.EXPECT().Run(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+			},
+		},
+		{
+			name:      "Config error",
+			wantPanic: true,
+			mockConfig: func(cl *mocks.MockconfigLoader) {
+				cl.EXPECT().Load(gomock.Any()).Return(nil, errors.New("test config error")).Times(1)
+			},
+			mockApp: func(ar *mocks.MockappRunner) {
+				ar.EXPECT().Run(gomock.Any(), gomock.Any()).Return(nil).Times(0)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockConfigLoader := mocks.NewMockconfigLoader(ctrl)
+			mockAppRunner := mocks.NewMockappRunner(ctrl)
+
+			tt.mockConfig(mockConfigLoader)
+			tt.mockApp(mockAppRunner)
+
+			cl = mockConfigLoader
+			ar = mockAppRunner
+
+			if tt.wantPanic {
+				defer func() {
+					r := recover()
+					require.NotNil(t, r, "The code did not panic")
+				}()
+			}
+
+			main()
 		})
 	}
 }

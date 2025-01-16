@@ -5,15 +5,15 @@ import (
 
 	"github.com/sethvargo/go-envconfig"
 
-	"github.com/xgmsx/go-url-shortener-ddd/pkg/grpc"
-	"github.com/xgmsx/go-url-shortener-ddd/pkg/http"
-	"github.com/xgmsx/go-url-shortener-ddd/pkg/kafka/reader"
-	"github.com/xgmsx/go-url-shortener-ddd/pkg/kafka/writer"
-	"github.com/xgmsx/go-url-shortener-ddd/pkg/logger"
-	"github.com/xgmsx/go-url-shortener-ddd/pkg/observability/otel"
-	"github.com/xgmsx/go-url-shortener-ddd/pkg/observability/sentry"
-	"github.com/xgmsx/go-url-shortener-ddd/pkg/postgres"
-	"github.com/xgmsx/go-url-shortener-ddd/pkg/redis"
+	"github.com/xgmsx/go-tiny-url/pkg/grpc"
+	"github.com/xgmsx/go-tiny-url/pkg/http"
+	"github.com/xgmsx/go-tiny-url/pkg/kafka/reader"
+	"github.com/xgmsx/go-tiny-url/pkg/kafka/writer"
+	"github.com/xgmsx/go-tiny-url/pkg/logger"
+	"github.com/xgmsx/go-tiny-url/pkg/observability/otel"
+	"github.com/xgmsx/go-tiny-url/pkg/observability/sentry"
+	"github.com/xgmsx/go-tiny-url/pkg/postgres"
+	"github.com/xgmsx/go-tiny-url/pkg/redis"
 )
 
 type App struct {
@@ -38,11 +38,11 @@ type Config struct {
 	GRPC grpc.Config
 }
 
-func New() (*Config, error) {
-	var cfg Config
-	err := envconfig.Process(context.Background(), &cfg)
-	if err != nil {
-		return &cfg, err
-	}
-	return &cfg, nil
+func New() *Config {
+	return &Config{}
+}
+
+func (c *Config) Load(ctx context.Context) (*Config, error) {
+	err := envconfig.Process(ctx, c)
+	return c, err
 }
