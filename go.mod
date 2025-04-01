@@ -1,6 +1,7 @@
 module github.com/xgmsx/go-tiny-url
 
 go 1.22.9
+toolchain go1.24.1
 
 require (
 	github.com/doug-martin/goqu/v9 v9.19.0
@@ -27,7 +28,7 @@ require (
 	go.uber.org/automaxprocs v1.6.0
 	go.uber.org/mock v0.5.0
 	google.golang.org/grpc v1.69.4
-	google.golang.org/protobuf v1.36.2
+	google.golang.org/protobuf v1.36.6
 )
 
 require (
